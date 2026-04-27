@@ -1,4 +1,4 @@
-<b><h2>Inferring the relative contributions of evolutionary processes shaping X chromosome dynamics in the common marmoset (Callithrix jacchus) in the presence of twinning and hematopoietic chimerism</b></h2>  
+<b><h2>Inferring the relative contributions of evolutionary processes shaping X chromosome dynamics in the common marmoset (<i>Callithrix jacchus</i>) in the presence of twinning and hematopoietic chimerism</b></h2>  
 
 <b>Vivak Soni, Cyril J. Versoza, Devangana Shah, Susanne P. Pfeifer, and Jeffrey D. Jensen.</b>
 
