@@ -1,0 +1,176 @@
+// Keywords: nonWF, non-Wright-Fisher
+
+initialize() {
+
+	//start the clock
+	defineGlobal("start", clock());
+	initializeSLiMModelType("nonWF");
+	initializeSLiMOptions(keepPedigrees=T);	
+        defineConstant("Nanc", 61198); //Ancestral population size (to which everything is scaled)
+        defineConstant("Nbot", asInteger(Nanc * 0.293)); //Population size at bottleneck
+        defineConstant("Ncurr", 33830); //Population size at time of sampling
+        defineConstant("Tbot", asInteger(0.0287*Nanc)); //Time of bottleneck
+        defineConstant("d_len", 1000000); //Length of simulated region
+	defineConstant("burnin", asInteger(10*Nanc)); //10N burnin
+	defineConstant("simEnd", asInteger(burnin + Tbot)); //SimEnd is burnin + no. of gens since bottleneck	
+
+	defineConstant("r", ((Ncurr/Nbot)^(1/Tbot))-1); //Growth rate calculated from Ncurr, Nbot and Tbot
+	
+	
+	initializeMutationType("m1", 0.5, "f", 0.0);
+	m1.convertToSubstitution = T;
+	
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElement(g1, 0, d_len);
+	initializeSex("X");
+//FEMALE MUTATION RATE//
+	//fixed recombination rate (Nachman and Crowell 2000 average)
+	if (d_mu_f_map=='fixed')
+	{
+		mu = 1.4629e-9;
+		initializeMutationRate(mu, sex="F");
+	}
+	//variable rate (from input file)
+	else
+	{
+		lines = readFile(d_mu_f_map);
+		mu = NULL;
+		coords = NULL;
+		for (line in lines)
+		{
+			components = strsplit(line,"\t");
+			coords = c(coords, asInteger(components[0]));
+			mu = c(mu, asFloat(components[1]));
+		}
+		coords = c(coords[1:(size(coords)-1)] - 1, 1000000);
+		initializeMutationRate(mu, coords, sex="F");
+	}
+	
+
+//MALE MUTATION RATE//
+	if (d_mu_m_map=='fixed')
+	{
+		mu = 3.9499e-9;
+		initializeMutationRate(mu, sex="M");
+	}
+	//variable rate (from input file)
+	else
+	{
+		lines = readFile(d_mu_m_map);
+		mu = NULL;
+		coords = NULL;
+		for (line in lines)
+		{
+			components = strsplit(line,"\t");
+			coords = c(coords, asInteger(components[0]));
+			mu = c(mu, asFloat(components[1]));
+		}
+		coords = c(coords[1:(size(coords)-1)] - 1, 1000000);
+		initializeMutationRate(mu, coords, sex="M");
+	}
+
+
+	//RECOMBINATION RATE//
+	if (d_rr_map=='fixed')
+	{
+		rr = 1e-8;
+		initializeRecombinationRate(rr);
+	}
+	//variable rate (from input file - already adjusted for sex-average rate)
+	else
+	{
+		lines = readFile(d_rr_map);
+		rr = NULL;
+		coords = NULL;
+		for (line in lines)
+		{
+			components = strsplit(line,"\t");
+			coords = c(coords, asInteger(components[0]));
+			rr = c(rr, asFloat(components[1]));
+		}
+		coords = c(coords[1:(size(coords)-1)] - 1, 1000000);
+		initializeRecombinationRate(rr, coords);
+	}
+
+}
+
+reproduction() {
+	// monogamous mating between whoever is around
+	males = p1.subsetIndividuals(sex="M");
+	females = p1.subsetIndividuals(sex="F");
+	pairs = min(size(males), size(females));
+	// sample down to the number of pairs; this also shuffles the individuals
+	males = sample(males, pairs);
+	females = sample(females, pairs);
+	// mate pairs, with a mean litter size of 2.5
+	for (m in males, f in females) 
+		{
+		litterSize = 2;
+		for (j in seqLen(litterSize))
+			{
+			if(runif(1) < d_sex_ratio)
+				{
+				offspring = p1.addCrossed(f, m, sex="M");
+				}
+			else
+				{
+				offspring = p1.addCrossed(f, m, sex="F");
+				}			
+			}
+		}
+	// everybody has reproduced; don't do any more reproduction this tick
+	self.active = 0;
+}
+
+1 early() {
+	sim.addSubpop("p1", Nanc, sexRatio=d_sex_ratio);
+	community.rescheduleScriptBlock(s1, start=simEnd, end=simEnd);
+
+}
+early() {
+	//Constant pop size during burnin
+	if (sim.cycle < burnin){
+		p1.fitnessScaling = Nanc / p1.individualCount;
+	}
+	else
+	//Bottleneck followed by exponential growth decline for remainder of simulation
+	{
+	   t = sim.cycle - burnin;
+	   p1_size = round(Nbot * (1+ r)^t);
+		p1.fitnessScaling = (p1_size) / p1.individualCount;
+	}
+}
+
+
+//late() {
+//	inds = p1.individuals;
+//	catn(sim.cycle + ": " + size(inds) + " (" + max(inds.age) + ")");
+//}
+
+
+s1 late() {
+    ids = p1.individuals.pedigreeParentIDs;
+   
+    id_strings = NULL;
+    for (ind in p1.individuals) {
+        ids = ind.pedigreeParentIDs;
+        ind_id = strsplit(substr(paste(ind), 14), ">")[0];
+        id_string = paste(ind_id, ind.pedigreeID, ids, ind.sex, sep='\t');
+        writeFile(d_folder + "/pedigreeIDs_" + d_paramID + "_rep" + d_repID + ".txt", id_string, append=T);
+        //catn(id_string);
+        id_strings = c(id_strings, id_string);
+    }
+    ids = p1.individuals.pedigreeParentIDs;
+//    catn(size(ids) + " ids");
+//    catn(size(unique(ids)) + " unique ids");
+//    catn(size(id_strings) + " id strings");
+//    catn(size(unique(id_strings)) + " unique id strings");
+    
+    inds = p1.individuals;
+    inds.genomes.outputVCF(d_folder + "/" + d_paramID + "_rep" + d_repID + ".vcf");
+    //sim.outputFixedMutations(d_folder + "/" + "_rep" + d_repID + ".fixed", append=F);    
+//   print("Peak Mem Usage: " + usage(peak = T));
+//	print("Runtime: " + (clock()-start));
+	inds = p1.individuals;
+	print("Simulation complete, final population size: " + size(inds));
+}

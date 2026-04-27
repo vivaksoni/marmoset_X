@@ -1,0 +1,200 @@
+// Keywords: nonWF, non-Wright-Fisher
+
+initialize() {
+	//start the clock
+	defineGlobal("start", clock());
+	initializeSLiMModelType("nonWF");
+	initializeSLiMOptions(keepPedigrees=T);	
+        defineConstant("Nanc", 61198); //Ancestral population size (to which everything is scaled)
+        defineConstant("Nbot", asInteger(Nanc * 0.293)); //Population size at bottleneck
+        defineConstant("Ncurr", 33830); //Population size at time of sampling
+        defineConstant("Tbot", asInteger(0.0287*Nanc)); //Time of bottleneck
+        defineConstant("N", Nanc);
+	defineConstant("burnin", asInteger(10*Nanc)); //10N burnin
+	defineConstant("simEnd", asInteger(burnin + Tbot)); //SimEnd is burnin + no. of gens since bottleneck	
+
+	defineConstant("r", ((Ncurr/Nbot)^(1/Tbot))-1); //Growth rate calculated from Ncurr, Nbot and Tbot
+	
+	
+	// mutation types:
+	//2Nes = [0, -1, -10, -100, -10000], s = [0.0, -0.0001, -0.001, -0.01, -1]
+	initializeMutationType("m1", 0.5, "f", 0.0); //selectively neutral
+	initializeMutationType("m2", 0.5, "s", "return runif(1, -10/(N*2), -1/(N*2));"); //weakly deleterious (1<2Nes<10)
+	initializeMutationType("m3", 0.5, "s", "return runif(1, -100/(N*2), -10/(N*2));"); //moderately deleterious (10<2Nes<100)
+	initializeMutationType("m4", 0.5, "s", "return runif(1, -1000/(N*2), -100/(N*2));"); //strongly deleterious (100<2Nes<1000)
+	m1.convertToSubstitution = T;
+	m2.convertToSubstitution = T;
+	m3.convertToSubstitution = T;
+	m4.convertToSubstitution = T;
+	initializeSex("X");
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElementType("g2", c(m1, m2, m3, m4), c(0.3, 0.1, 0.1, 0.5)); //exon
+
+//Read in exon map and assign starts and ends to separate arrays
+lines = readFile(d_exon_map);
+starts = NULL;
+ends = NULL;
+for (line in lines)
+{
+	components = strsplit(line,"\t");
+	starts = c(starts, asInteger(components[1]));
+		ends = c(ends, asInteger(components[2]));
+}
+//Initialize neutral region up to first exon
+initializeGenomicElement(g1, d_start, asInteger(starts[0]-1));
+
+//Check if multiple exons in region
+if (size(starts)>1)
+{
+	//Loop through coordinates array (minus the last element, which will be handled post-loop
+	for (i in seq(0, size(starts)-2))
+	{
+		initializeGenomicElement(g2, starts[i], ends[i]); //Initialize exon
+		if (starts[i+1] > asInteger(ends[i]+ 1))
+		{
+			initializeGenomicElement(g1, asInteger(ends[i]+1), asInteger(starts[i+1]-1)); //Initialize neutral region between end of current exon and start of next
+		}
+	}
+	
+	//Add final exon
+	initializeGenomicElement(g2, starts[length(starts)-1], ends[length(ends)-1]);
+}
+
+//Initialize neutral region from final exon to end of simulated region
+initializeGenomicElement(g1, asInteger(ends[length(ends)-1]+1), d_end);	
+	
+//FEMALE MUTATION RATE//
+	//fixed recombination rate (Nachman and Crowell 2000 average)
+	if (d_mu_f_map=='fixed')
+	{
+		mu = 1.2216216216216216e-09;
+		initializeMutationRate(mu, sex="F");
+	}
+	//variable rate (from input file)
+	else
+	{
+		lines = readFile(d_mu_f_map);
+		mu = NULL;
+		coords = NULL;
+		for (line in lines)
+		{
+			components = strsplit(line,"\t");
+			coords = c(coords, asInteger(components[0]));
+			mu = c(mu, asFloat(components[1]));
+		}
+		coords = c(coords[1:(size(coords)-1)] - 1, d_end);
+		initializeMutationRate(mu, coords, sex="F");
+	}
+	
+
+//MALE MUTATION RATE//
+	if (d_mu_m_map=='fixed')
+	{
+		mu = 3.2983783783783783e-09;
+		initializeMutationRate(mu, sex="M");
+	}
+	//variable rate (from input file)
+	else
+	{
+		lines = readFile(d_mu_m_map);
+		mu = NULL;
+		coords = NULL;
+		for (line in lines)
+		{
+			components = strsplit(line,"\t");
+			coords = c(coords, asInteger(components[0]));
+			mu = c(mu, asFloat(components[1]));
+		}
+		coords = c(coords[1:(size(coords)-1)] - 1, d_end);
+		initializeMutationRate(mu, coords, sex="M");
+	}
+
+
+	//RECOMBINATION RATE//
+	if (d_rr_map=='fixed')
+	{
+		rr = 1e-8;
+		initializeRecombinationRate(rr);
+	}
+	//variable rate (from input file - already adjusted for sex-average rate)
+	else
+	{
+		lines = readFile(d_rr_map);
+		rr = NULL;
+		coords = NULL;
+		for (line in lines)
+		{
+			components = strsplit(line,"\t");
+			coords = c(coords, asInteger(components[0]));
+			rr = c(rr, asFloat(components[1]));
+		}
+		coords = c(coords[1:(size(coords)-1)] - 1, d_end);
+		initializeRecombinationRate(rr, coords);
+	}
+
+}
+
+reproduction() {
+	// monogamous mating between whoever is around
+	males = p1.subsetIndividuals(sex="M");
+	females = p1.subsetIndividuals(sex="F");
+	pairs = min(size(males), size(females));
+	// sample down to the number of pairs; this also shuffles the individuals
+	males = sample(males, pairs);
+	females = sample(females, pairs);
+	// mate pairs, with a mean litter size of 2.5
+	for (m in males, f in females) 
+	{
+		litterSize = 2;
+		for (j in seqLen(litterSize))
+			p1.addCrossed(f, m);
+	}
+	// everybody has reproduced; don't do any more reproduction this tick
+	self.active = 0;
+}
+
+1 early() {
+	sim.addSubpop("p1", Nanc);
+	community.rescheduleScriptBlock(s1, start=simEnd, end=simEnd);
+
+}
+early() {
+	//Constant pop size during burnin
+	if (sim.cycle < burnin){
+		p1.fitnessScaling = Nanc / p1.individualCount;
+	}
+	else
+	//Bottleneck followed by exponential growth decline for remainder of simulation
+	{
+	   t = sim.cycle - burnin;
+	   p1_size = round(Nbot * (1+ r)^t);
+		p1.fitnessScaling = (p1_size) / p1.individualCount;
+	}
+}
+
+
+//late() {
+//	inds = p1.individuals;
+//	catn(sim.cycle + ": " + size(inds) + " (" + max(inds.age) + ")");
+//}
+
+
+s1 late() {
+    ids = p1.individuals.pedigreeParentIDs;
+   
+    id_strings = NULL;
+    for (ind in p1.individuals) {
+        ids = ind.pedigreeParentIDs;
+        ind_id = strsplit(substr(paste(ind), 14), ">")[0];
+        id_string = paste(ind_id, ind.pedigreeID, ids, ind.sex, sep='\t');
+        writeFile(d_folder + "/pedigreeIDs_" + d_paramID + "_rep" + d_repID + ".txt", id_string, append=T);
+        //catn(id_string);
+        id_strings = c(id_strings, id_string);
+    }
+	 inds = p1.individuals;
+    inds.genomes.outputVCF(d_folder + "/" + d_paramID + "_rep" + d_repID + ".vcf");
+    sim.outputFixedMutations(d_folder + "/" + d_paramID + "_rep" + d_repID + ".fixed", append=F);
+
+	
+	print("Simulation complete, final population size: " + size(inds));
+}

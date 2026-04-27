@@ -1,0 +1,124 @@
+import libsequence
+import sys
+import pandas as pd
+import math
+import argparse
+import vcf
+import numpy as np
+
+#parsing user given constants
+parser = argparse.ArgumentParser(description='Information about length of region and sample size')
+parser.add_argument('-inFile', dest = 'inFile', action='store', nargs = 1, type = str, help = 'vcf file')
+parser.add_argument('-samplesFile', dest = 'samplesFile', action='store', nargs = 1, type = str, help = 'samples file name')
+parser.add_argument('-outFile', dest = 'outFile', action='store', nargs = 1, type = str, help = 'output file name')
+parser.add_argument('-win_size', dest = 'win_size', action='store', nargs = 1, type = int, help = 'size of sliding windows')
+parser.add_argument('-step_size', dest = 'step_size', action='store', nargs = 1, type = int, help = 'step size for sliding windows')
+parser.add_argument('-regionLen', dest = 'regionLen', action='store', nargs = 1, type = int, help = 'size of simulated region')
+
+args = parser.parse_args()
+inFile = args.inFile[0]
+samplesFile = args.samplesFile[0]
+outFile = args.outFile[0]
+chr_len =  args.regionLen[0]
+win_size = args.win_size[0]/float(chr_len)
+step_size = args.step_size[0]/float(chr_len)
+
+
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+#Get chimeric site counts from vcf file
+def get_chimeric_genotype(vcf_file, pairs):
+    vcf_reader = vcf.Reader(filename=vcf_file)
+    l_data = []
+    for i,record in enumerate(vcf_reader):
+        s = ''
+        for p in pairs:
+            p1 = ''.join([x['GT'] for x in record.samples if "Call(sample="+p[0] in str(x)]).replace('|','')
+            p2 = ''.join([x['GT'] for x in record.samples if "Call(sample="+p[1] in str(x)]).replace('|','')
+            twins = p1 + p2
+            if(len(twins)==4):
+                #Check first and third sites, and then second and fourth (ie match chromosomes)
+                if((twins[0]=='1') | (twins[2]=='1')):
+                    s+='1'
+                else:
+                    s+='0'
+                if((twins[1]=='1') | (twins[3]=='1')):
+                    s+='1'
+                else:
+                    s+='0'
+            elif(len(twins)==3):
+                #Check first and third sites, and then second and fourth (ie match chromosomes)
+                if((twins[0]=='1') | (twins[2]=='1')):
+                    s+='1'+ twins[1]
+                else:
+                    s+='0' + twins[1]
+            else:
+                if((twins[0]=='1') | (twins[1]=='1')):
+                    s+='1'
+                else:
+                    s+='0'
+        if('1' in s):
+            l_data.append([record.POS/chr_len, s])
+    return(l_data)
+
+
+
+
+#Function to create dictionary of polySIM summary statistics. Returns dictionary of summary stats
+def get_polySIM_stats(sd):
+    #Create polysim object
+    ps = libsequence.PolySIM(sd)
+    #Create list of methods (ie polySIM summaryStats)
+    a = [method for method in dir(ps) if callable(getattr(ps, method)) if not method.startswith('_')]
+    #Loop through methods, storing names as keys, and estimates as values in dict
+    ss_dict = {}
+    for method in a:
+        ss_dict[method] = getattr(ps, method)()
+        
+    return(ss_dict)
+
+
+#Function to create dictionary of LD stats. Returns dictionary.
+#Function to create dictionary of LD stats. Returns dictionary.
+def get_LD_stats(sd):
+    ld = libsequence.ld(sd)
+    df = pd.DataFrame(ld)
+    ss_dict = {}
+    try:
+        ss_dict['meanrsq'] = sum(df['rsq'])/len(df['rsq'])
+        ss_dict['meanD'] = sum(df['D'])/len(df['D'])
+        ss_dict['meanDprime'] = sum(df['Dprime'])/len(df['Dprime'])
+    except Exception:
+        ss_dict['meanrsq'] = 'NA'
+        ss_dict['meanD'] = 'NA'
+        ss_dict['meanDprime'] = 'NA'
+    return(ss_dict)
+
+
+#Get samples into chimeric pairs
+with open(samplesFile) as f:
+    lines = f.read().splitlines()
+pairs = list(chunks(lines,2))
+
+df = pd.DataFrame()
+vcf_file=inFile
+l_data = get_chimeric_genotype(vcf_file, pairs)
+sd = libsequence.SimData(l_data)
+
+#define sliding windows
+wins = libsequence.Windows(sd,window_size=win_size,step_len=step_size,starting_pos=0.0,ending_pos=1.0)
+num_wins = len(wins)
+d = {}
+#Loop through windows, calculating stats for each window
+for k, win in enumerate(wins):
+    d['window'] = k
+    d = {**d, **get_polySIM_stats(win)}
+
+
+    df2 = pd.DataFrame.from_dict(d, orient='index').T
+    df = pd.concat([df, df2])
+
+df.to_csv(outFile, header=True, index=False, sep='\t')
